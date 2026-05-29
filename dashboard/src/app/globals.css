@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: var(--font-display);
+  --font-body: var(--font-body);
+
+  --color-base: #050A18;
+  --color-surface: #0D1526;
+  --color-elevated: #152035;
+  
+  --color-accent: #06b6d4;
+  --color-highlight: #f97316;
+}
+
+@layer base {
+  :root {
+    --bg-base: #050A18;
+    --bg-surface: #0D1526;
+    --bg-elevated: #152035;
+    --accent: #06b6d4;
+    --highlight: #f97316;
+    --text-primary: #ffffff;
+    --text-secondary: rgba(255, 255, 255, 0.6);
+    --border: rgba(255, 255, 255, 0.08);
+  }
+  
+  body {
+    background-color: var(--bg-base);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+  }
+  
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+  }
+}
+
+@layer utilities {
+  .glass-card {
+    @apply bg-white/[0.03] border border-white/[0.08] backdrop-blur-xl rounded-3xl;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.10);
+    transition: all 0.3s ease-out;
+  }
+
+  .glass-card:hover {
+    @apply bg-white/[0.07] border-white/[0.18];
+  }
+  
+  .glass-nav {
+    @apply bg-white/[0.06] backdrop-blur-2xl border border-white/[0.08];
+  }
+  
+  .glass-nav-scrolled {
+    @apply bg-black/40 backdrop-blur-2xl border border-white/[0.08];
+  }
+  
+  .gradient-text {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-[var(--accent)] to-[var(--highlight)];
+  }
+}
