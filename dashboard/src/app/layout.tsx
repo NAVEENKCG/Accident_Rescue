@@ -1,6 +1,10 @@
 import type { Metadata } from "next";
 import { Syne, Outfit } from "next/font/google";
 import "./globals.css";
+import { TelemetryProvider } from "@/context/TelemetryContext";
+import { Sidebar } from "@/components/Sidebar";
+import { Topbar } from "@/components/Topbar";
+import { Toast } from "@/components/Toast";
 
 const syne = Syne({
   subsets: ["latin"],
@@ -17,8 +21,9 @@ const outfit = Outfit({
 });
 
 export const metadata: Metadata = {
-  title: "Accident Rescue System",
-  description: "Real-time vehicle impact detection and rescue dashboard",
+  title: "AccidentGuard Dashboard — Vehicle Accident Detection System",
+  description:
+    "Real-time vehicle impact detection, GPS tracking and emergency alert dashboard powered by MPU6050 + GSM.",
 };
 
 export default function RootLayout({
@@ -28,17 +33,35 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="dark">
-      <body className={`${outfit.variable} ${syne.variable} antialiased min-h-screen bg-[var(--bg-base)] text-white`}>
-        {/* Navbar placeholder */}
-        <nav className="fixed top-4 left-0 right-0 max-w-2xl mx-auto z-40 glass-nav rounded-full px-8 py-4 flex items-center justify-between transition-all duration-300">
-          <span className="font-display font-bold tracking-widest text-sm uppercase text-white">Rescue.OS</span>
-          <div className="flex gap-6 text-sm opacity-60">
-            <span className="hover:opacity-100 cursor-pointer">Overview</span>
-            <span className="hover:opacity-100 cursor-pointer">Sensors</span>
-            <span className="hover:opacity-100 cursor-pointer">Alerts</span>
-          </div>
-        </nav>
-        {children}
+      <body
+        className={`${outfit.variable} ${syne.variable} antialiased min-h-screen bg-[var(--bg-base)] text-white`}
+      >
+        <TelemetryProvider>
+          {/* Skip to content for accessibility */}
+          <a
+            href="#main-content"
+            className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-50 focus:px-4 focus:py-2 focus:bg-[var(--accent)] focus:text-black focus:rounded-lg focus:font-semibold"
+          >
+            Skip to content
+          </a>
+
+          {/* Sidebar */}
+          <Sidebar />
+
+          {/* Top bar */}
+          <Topbar />
+
+          {/* Page content — offset by sidebar + topbar */}
+          <main
+            id="main-content"
+            className="md:ml-[220px] pt-14 min-h-screen bg-[var(--bg-base)]"
+          >
+            {children}
+          </main>
+
+          {/* Global toast overlay */}
+          <Toast />
+        </TelemetryProvider>
       </body>
     </html>
   );
