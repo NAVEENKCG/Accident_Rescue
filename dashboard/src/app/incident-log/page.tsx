@@ -8,10 +8,13 @@ import {
   AlertTriangle,
   XCircle,
   ArrowUpDown,
+  Download,
 } from "lucide-react";
 import { useTelemetry } from "@/context/TelemetryContext";
 import { AlertEntry } from "@/lib/simulatedData";
 import { staggerContainer, fadeInUp } from "@/lib/animations";
+import { IncidentDetailPanel } from "@/components/IncidentDetailPanel";
+import { downloadAlertsCSV } from "@/lib/exportCsv";
 import { cn } from "@/lib/cn";
 
 type SortKey = "timestamp" | "severity" | "type";
@@ -47,6 +50,7 @@ export default function IncidentLogPage() {
   const { alerts } = useTelemetry();
   const [sortKey, setSortKey] = useState<SortKey>("timestamp");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [selectedAlert, setSelectedAlert] = useState<AlertEntry | null>(null);
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -143,6 +147,14 @@ export default function IncidentLogPage() {
           <ScrollText className="w-4 h-4 text-[var(--accent)]" />
           <h2 className="font-display font-bold text-base text-white">All Incidents</h2>
           <span className="ml-auto text-xs text-white/30">{sorted.length} records</span>
+          <button
+            id="export-csv-btn"
+            onClick={() => downloadAlertsCSV(sorted)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-[var(--accent)]/10 border border-[var(--accent)]/25 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Export CSV
+          </button>
         </div>
 
         <div className="overflow-x-auto">
@@ -176,7 +188,8 @@ export default function IncidentLogPage() {
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: Math.min(i * 0.02, 0.3) }}
-                  className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors"
+                  onClick={() => setSelectedAlert(alert)}
+                  className="border-b border-white/[0.04] hover:bg-white/[0.03] transition-colors cursor-pointer"
                 >
                   <td className="px-4 py-3">{severityBadge(alert.severity)}</td>
                   <td className="px-4 py-3">
@@ -225,6 +238,12 @@ export default function IncidentLogPage() {
           </table>
         </div>
       </motion.div>
+
+      {/* Incident Detail Panel */}
+      <IncidentDetailPanel
+        alert={selectedAlert}
+        onClose={() => setSelectedAlert(null)}
+      />
     </div>
   );
 }

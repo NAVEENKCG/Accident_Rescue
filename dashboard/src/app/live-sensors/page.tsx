@@ -112,6 +112,15 @@ export default function LiveSensorsPage() {
   const yData = accelHistory.map((e) => e.y);
   const zData = accelHistory.map((e) => e.z);
 
+  // 5-sample rolling average magnitude — mirrors Arduino firmware filter
+  const rawMag = accelHistory.map((e) =>
+    parseFloat(Math.sqrt(e.x * e.x + e.y * e.y + e.z * e.z).toFixed(3))
+  );
+  const rollingAvg = rawMag.map((_, i, arr) => {
+    const window = arr.slice(Math.max(0, i - 4), i + 1);
+    return parseFloat((window.reduce((s, v) => s + v, 0) / window.length).toFixed(3));
+  });
+
   const chartData = {
     labels,
     datasets: [
@@ -144,6 +153,17 @@ export default function LiveSensorsPage() {
         pointRadius: 0,
         fill: false,
         tension: 0.4,
+      },
+      {
+        label: "Rolling Avg |G| (×5)",
+        data: rollingAvg,
+        borderColor: "rgba(34,197,94,0.8)",
+        backgroundColor: "rgba(34,197,94,0.04)",
+        borderWidth: 2,
+        borderDash: [5, 3],
+        pointRadius: 0,
+        fill: false,
+        tension: 0.3,
       },
     ],
   };

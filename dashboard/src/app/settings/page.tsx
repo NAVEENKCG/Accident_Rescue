@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Settings, Save, CheckCircle2, MessageSquare, Phone, MessageCircle } from "lucide-react";
+import { Settings, Save, CheckCircle2, MessageSquare, Phone, MessageCircle, VolumeX } from "lucide-react";
 import { useTelemetry } from "@/context/TelemetryContext";
 import { staggerContainer, fadeInUp } from "@/lib/animations";
 import { cn } from "@/lib/cn";
@@ -61,6 +61,7 @@ export default function SettingsPage() {
   const [smsAlerts, setSmsAlerts] = useState(settings.smsAlerts);
   const [voiceAlerts, setVoiceAlerts] = useState(settings.voiceAlerts);
   const [whatsappAlerts, setWhatsappAlerts] = useState(settings.whatsappAlerts);
+  const [muteSound, setMuteSound] = useState(settings.muteSound);
   const [saved, setSaved] = useState(false);
 
   // Sync if settings change externally
@@ -70,6 +71,7 @@ export default function SettingsPage() {
     setSmsAlerts(settings.smsAlerts);
     setVoiceAlerts(settings.voiceAlerts);
     setWhatsappAlerts(settings.whatsappAlerts);
+    setMuteSound(settings.muteSound);
   }, [settings]);
 
   const handleSave = () => {
@@ -79,6 +81,7 @@ export default function SettingsPage() {
       smsAlerts,
       voiceAlerts,
       whatsappAlerts,
+      muteSound,
     });
     setSaved(true);
     setTimeout(() => setSaved(false), 3000);
@@ -203,6 +206,14 @@ export default function SettingsPage() {
             label="WhatsApp Alerts"
             description="Send WhatsApp message with GPS link"
             icon={MessageCircle}
+          />
+          <Toggle
+            id="toggle-mute"
+            checked={muteSound}
+            onChange={setMuteSound}
+            label="Mute Sound Alerts"
+            description="Disable Web Audio beep on impact detection"
+            icon={VolumeX}
           />
         </motion.section>
 

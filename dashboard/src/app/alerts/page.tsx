@@ -6,6 +6,7 @@ import { CheckCircle2, AlertTriangle, XCircle, Bell, MessageSquare, X } from "lu
 import { useTelemetry } from "@/context/TelemetryContext";
 import { AlertEntry } from "@/lib/simulatedData";
 import { staggerContainer, fadeInUp } from "@/lib/animations";
+import { IncidentDetailPanel } from "@/components/IncidentDetailPanel";
 import { cn } from "@/lib/cn";
 
 type FilterType = "all" | "sent" | "cancelled" | "warning";
@@ -64,6 +65,7 @@ function cancelBadge(status: AlertEntry["cancelStatus"]) {
 export default function AlertsPage() {
   const { alerts } = useTelemetry();
   const [filter, setFilter] = useState<FilterType>("all");
+  const [selectedAlert, setSelectedAlert] = useState<AlertEntry | null>(null);
 
   const filtered = alerts.filter((a) => {
     if (filter === "all") return true;
@@ -159,7 +161,8 @@ export default function AlertsPage() {
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, scale: 0.98 }}
                       transition={{ delay: i * 0.03 }}
-                      className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors"
+                      onClick={() => setSelectedAlert(alert)}
+                      className="border-b border-white/[0.04] hover:bg-white/[0.03] transition-colors cursor-pointer"
                     >
                       <td className="px-4 py-3">{severityIcon(alert.severity)}</td>
                       <td className="px-4 py-3">
@@ -200,6 +203,12 @@ export default function AlertsPage() {
           Showing {filtered.length} of {alerts.length} alert{alerts.length !== 1 ? "s" : ""}
         </motion.p>
       </motion.div>
+
+      {/* Incident Detail Panel */}
+      <IncidentDetailPanel
+        alert={selectedAlert}
+        onClose={() => setSelectedAlert(null)}
+      />
     </div>
   );
 }

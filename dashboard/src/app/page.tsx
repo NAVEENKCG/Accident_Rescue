@@ -12,22 +12,31 @@ import {
   XCircle,
   ExternalLink,
   Activity,
+  Gauge,
 } from "lucide-react";
 import { useTelemetry } from "@/context/TelemetryContext";
 import { staggerContainer, fadeInUp, SPRING_SMOOTH } from "@/lib/animations";
+import { Sparkline } from "@/components/Sparkline";
+import { WarningCountdown } from "@/components/WarningCountdown";
 import { cn } from "@/lib/cn";
 
-// ── Metric Card ───────────────────────────────────────────────────────────────
+// ── Metric Card with Sparkline ────────────────────────────────────────────────
 function MetricCard({
   label,
   value,
   unit,
   highlight,
+  sparkData,
+  sparkColor,
+  threshold,
 }: {
   label: string;
   value: string | number;
   unit?: string;
   highlight?: boolean;
+  sparkData?: number[];
+  sparkColor?: string;
+  threshold?: number;
 }) {
   return (
     <motion.div
@@ -36,9 +45,18 @@ function MetricCard({
       whileTap={{ scale: 0.96 }}
       className="glass-card p-5 flex flex-col gap-2"
     >
-      <span className="text-xs text-white/50 font-medium tracking-wider uppercase">
-        {label}
-      </span>
+      <div className="flex items-start justify-between">
+        <span className="text-xs text-white/50 font-medium tracking-wider uppercase">
+          {label}
+        </span>
+        {sparkData && sparkData.length > 1 && (
+          <Sparkline
+            data={sparkData}
+            color={sparkColor ?? "var(--accent)"}
+            threshold={threshold}
+          />
+        )}
+      </div>
       <div className="flex items-baseline gap-1 mt-1">
         <span
           className={cn(
@@ -56,10 +74,10 @@ function MetricCard({
 
 // ── Module Status Badge ────────────────────────────────────────────────────────
 const badgeColors: Record<string, string> = {
-  Fixed:    "bg-[var(--accent)]/15 text-[var(--accent)] border-[var(--accent)]/30",
-  Online:   "bg-[var(--success)]/15 text-[var(--success)] border-[var(--success)]/30",
-  Active:   "bg-[var(--success)]/15 text-[var(--success)] border-[var(--success)]/30",
-  Standby:  "bg-white/[0.06] text-white/50 border-white/10",
+  Fixed:   "bg-[var(--accent)]/15 text-[var(--accent)] border-[var(--accent)]/30",
+  Online:  "bg-[var(--success)]/15 text-[var(--success)] border-[var(--success)]/30",
+  Active:  "bg-[var(--success)]/15 text-[var(--success)] border-[var(--success)]/30",
+  Standby: "bg-white/[0.06] text-white/50 border-white/10",
 };
 
 function getVoltageBadge(v: string) {
@@ -80,11 +98,7 @@ function AlertRow({
   timestamp: string;
 }) {
   const Icon =
-    severity === "success"
-      ? CheckCircle2
-      : severity === "warning"
-      ? AlertTriangle
-      : XCircle;
+    severity === "success" ? CheckCircle2 : severity === "warning" ? AlertTriangle : XCircle;
   const iconClass =
     severity === "success"
       ? "text-[var(--success)] bg-[var(--success)]/10"
@@ -94,9 +108,7 @@ function AlertRow({
 
   return (
     <div className="flex gap-4 py-4 border-b border-white/[0.06] last:border-0 last:pb-0">
-      <div
-        className={cn("w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5", iconClass)}
-      >
+      <div className={cn("w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5", iconClass)}>
         <Icon className="w-4 h-4" />
       </div>
       <div className="flex-1 min-w-0">
@@ -109,9 +121,20 @@ function AlertRow({
 
 // ── Overview Page ─────────────────────────────────────────────────────────────
 export default function OverviewPage() {
-  const { accel, impactEvents, gps, alerts, modules } = useTelemetry();
+  const { accel, magnitude, impactEvents, gps, alerts, modules, accelHistory, settings } = useTelemetry();
 
   const recentAlerts = alerts.slice(0, 3);
+
+  // Extract last 15 data points for sparklines
+  const last15 = accelHistory.slice(-15);
+  const xHistory = last15.map((e) => e.x);
+  const yHistory = last15.map((e) => e.y);
+  const zHistory = last15.map((e) => e.z);
+
+  // Rolling magnitude history
+  const magHistory = accelHistory.slice(-15).map((e) =>
+    Math.sqrt(e.x * e.x + e.y * e.y + e.z * e.z)
+  );
 
   return (
     <div className="p-4 md:p-6 lg:p-8 max-w-7xl">
@@ -130,16 +153,52 @@ export default function OverviewPage() {
         </h1>
       </motion.div>
 
+      {/* ── Warning Countdown (shown only during impact warning) ── */}
+      <div className="mb-5">
+        <WarningCountdown />
+      </div>
+
       {/* ── Metric Cards ── */}
       <motion.div
         variants={staggerContainer}
         initial="hidden"
         animate="show"
-        className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6"
+        className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6"
       >
-        <MetricCard label="Accel X" value={accel.x.toFixed(2)} unit="g" />
-        <MetricCard label="Accel Y" value={accel.y.toFixed(2)} unit="g" />
-        <MetricCard label="Accel Z" value={accel.z.toFixed(2)} unit="g" />
+        <MetricCard
+          label="Accel X"
+          value={accel.x.toFixed(2)}
+          unit="g"
+          sparkData={xHistory}
+          sparkColor="#06b6d4"
+          threshold={settings.threshold}
+        />
+        <MetricCard
+          label="Accel Y"
+          value={accel.y.toFixed(2)}
+          unit="g"
+          sparkData={yHistory}
+          sparkColor="#f97316"
+          threshold={settings.threshold}
+        />
+        <MetricCard
+          label="Accel Z"
+          value={accel.z.toFixed(2)}
+          unit="g"
+          sparkData={zHistory}
+          sparkColor="#a855f7"
+          threshold={settings.threshold}
+        />
+        {/* G-Force Magnitude card */}
+        <MetricCard
+          label="G-Force Mag"
+          value={magnitude.toFixed(3)}
+          unit="g"
+          highlight={magnitude > settings.threshold}
+          sparkData={magHistory}
+          sparkColor={magnitude > settings.threshold ? "#ef4444" : "#22c55e"}
+          threshold={settings.threshold}
+        />
         <MetricCard
           label="Impact Events"
           value={impactEvents}
@@ -160,39 +219,22 @@ export default function OverviewPage() {
             <Cpu className="w-4 h-4 text-[var(--accent)]" />
             <h2 className="font-display font-bold text-base text-white">Module Status</h2>
           </div>
-
           <div className="space-y-3">
-            {/* GPS */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-sm text-white/70">
-                <Radio className="w-3.5 h-3.5 text-white/40" />
-                GPS NEO-6M
+            {[
+              { icon: Radio, label: "GPS NEO-6M", key: "gps" as const },
+              { icon: Activity, label: "GSM Module", key: "gsm" as const },
+              { icon: Cpu, label: "MPU6050", key: "mpu" as const },
+            ].map(({ icon: Icon, label, key }) => (
+              <div key={key} className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-sm text-white/70">
+                  <Icon className="w-3.5 h-3.5 text-white/40" />
+                  {label}
+                </div>
+                <span className={cn("text-xs font-semibold px-2.5 py-0.5 rounded-full border", badgeColors[modules[key]] ?? badgeColors.Standby)}>
+                  {modules[key]}
+                </span>
               </div>
-              <span className={cn("text-xs font-semibold px-2.5 py-0.5 rounded-full border", badgeColors[modules.gps] ?? badgeColors.Standby)}>
-                {modules.gps}
-              </span>
-            </div>
-            {/* GSM */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-sm text-white/70">
-                <Activity className="w-3.5 h-3.5 text-white/40" />
-                GSM Module
-              </div>
-              <span className={cn("text-xs font-semibold px-2.5 py-0.5 rounded-full border", badgeColors[modules.gsm] ?? badgeColors.Standby)}>
-                {modules.gsm}
-              </span>
-            </div>
-            {/* MPU */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-sm text-white/70">
-                <Cpu className="w-3.5 h-3.5 text-white/40" />
-                MPU6050
-              </div>
-              <span className={cn("text-xs font-semibold px-2.5 py-0.5 rounded-full border", badgeColors[modules.mpu] ?? badgeColors.Standby)}>
-                {modules.mpu}
-              </span>
-            </div>
-            {/* LM2596 */}
+            ))}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-sm text-white/70">
                 <Zap className="w-3.5 h-3.5 text-white/40" />
@@ -202,7 +244,6 @@ export default function OverviewPage() {
                 {modules.power}
               </span>
             </div>
-            {/* Buzzer */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-sm text-white/70">
                 <Volume2 className="w-3.5 h-3.5 text-white/40" />
@@ -221,7 +262,6 @@ export default function OverviewPage() {
             <MapPin className="w-4 h-4 text-[var(--accent)]" />
             <h2 className="font-display font-bold text-base text-white">Last Known Location</h2>
           </div>
-
           <div className="flex-1 flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/[0.12] py-8 px-4 mb-4 text-center">
             <MapPin className="w-8 h-8 text-white/20 mb-3" />
             <p className="text-base font-mono text-white/80">
@@ -229,7 +269,6 @@ export default function OverviewPage() {
             </p>
             <p className="text-sm text-white/40 mt-1">Tamil Nadu, India</p>
           </div>
-
           <div className="flex items-center justify-between">
             <span className="text-xs text-white/40">Updated 2s ago</span>
             <a
@@ -238,11 +277,46 @@ export default function OverviewPage() {
               rel="noopener noreferrer"
               className="flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)] hover:underline"
             >
-              Open in Maps
-              <ExternalLink className="w-3 h-3" />
+              Open in Maps <ExternalLink className="w-3 h-3" />
             </a>
           </div>
         </motion.div>
+      </motion.div>
+
+      {/* ── Live Magnitude Gauge Strip ── */}
+      <motion.div
+        variants={fadeInUp}
+        initial="hidden"
+        animate="show"
+        className="glass-card p-4 mb-6"
+      >
+        <div className="flex items-center gap-3 mb-2">
+          <Gauge className="w-3.5 h-3.5 text-[var(--accent)]" />
+          <span className="text-xs text-white/50 uppercase tracking-wider">Live G-Force Magnitude</span>
+          <span
+            className="ml-auto text-sm font-bold font-mono"
+            style={{ color: magnitude > settings.threshold ? "var(--danger)" : "var(--success)" }}
+          >
+            {magnitude.toFixed(3)}g
+          </span>
+          <span className="text-xs text-white/30">threshold: {settings.threshold}g</span>
+        </div>
+        <div className="relative h-2 bg-white/[0.06] rounded-full overflow-hidden">
+          <motion.div
+            className="h-full rounded-full"
+            style={{
+              background: magnitude > settings.threshold
+                ? "var(--danger)"
+                : "linear-gradient(90deg, var(--accent), #3b82f6)",
+            }}
+            animate={{ width: `${Math.min((magnitude / 5) * 100, 100)}%` }}
+            transition={{ duration: 0.4 }}
+          />
+          <div
+            className="absolute top-0 bottom-0 w-0.5 bg-[var(--danger)]/50"
+            style={{ left: `${(settings.threshold / 5) * 100}%` }}
+          />
+        </div>
       </motion.div>
 
       {/* ── Recent Alerts ── */}

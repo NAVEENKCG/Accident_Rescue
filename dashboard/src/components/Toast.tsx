@@ -4,21 +4,32 @@ import { useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { AlertTriangle, AlertCircle, X } from "lucide-react";
 import { useTelemetry } from "@/context/TelemetryContext";
+import { playAlertBeep } from "@/lib/audioAlert";
 
 export function Toast() {
-  const { latestToast, dismissToast } = useTelemetry();
+  const { latestToast, dismissToast, settings } = useTelemetry();
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastToastId = useRef<string | null>(null);
 
   // Auto-dismiss after 6 seconds
   useEffect(() => {
     if (latestToast) {
       if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => dismissToast(), 6000);
+
+      // Play audio only on new toasts (avoid replaying on re-render)
+      if (latestToast.id !== lastToastId.current) {
+        lastToastId.current = latestToast.id;
+        // Only play if sounds not muted
+        if (!settings.muteSound) {
+          playAlertBeep(latestToast.severity);
+        }
+      }
     }
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [latestToast, dismissToast]);
+  }, [latestToast, dismissToast, settings.muteSound]);
 
   const isDanger = latestToast?.severity === "danger";
   const borderColor = isDanger ? "var(--danger)" : "var(--warning)";

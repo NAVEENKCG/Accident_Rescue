@@ -162,6 +162,7 @@ export interface Settings {
   smsAlerts: boolean;
   voiceAlerts: boolean;
   whatsappAlerts: boolean;
+  muteSound: boolean;      // mute Web Audio alert beep
 }
 
 export const defaultSettings: Settings = {
@@ -170,4 +171,5 @@ export const defaultSettings: Settings = {
   smsAlerts: true,
   voiceAlerts: false,
   whatsappAlerts: false,
+  muteSound: false,
 };

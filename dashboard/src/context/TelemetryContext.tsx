@@ -24,6 +24,14 @@ import {
 } from "@/lib/simulatedData";
 
 // ── Types ────────────────────────────────────────────────────────────────────
+export interface WarningState {
+  active: boolean;
+  severity: "warning" | "danger";
+  magnitude: number;
+  secondsLeft: number;
+  totalSeconds: number;
+}
+
 interface TelemetryState {
   accel: { x: number; y: number; z: number };
   magnitude: number;
@@ -39,6 +47,8 @@ interface TelemetryState {
     power: string;
     buzzer: string;
   };
+  // Warning countdown state
+  warning: WarningState;
   // Toast state
   latestToast: { id: string; message: string; severity: "warning" | "danger" } | null;
   // Contacts
@@ -51,10 +61,19 @@ interface TelemetryState {
   editContact: (id: string, c: Partial<Contact>) => void;
   deleteContact: (id: string) => void;
   dismissToast: () => void;
+  cancelWarning: () => void;
 }
 
 // ── Default State ────────────────────────────────────────────────────────────
 const noop = () => {};
+
+const defaultWarning: WarningState = {
+  active: false,
+  severity: "warning",
+  magnitude: 0,
+  secondsLeft: 0,
+  totalSeconds: 30,
+};
 
 const defaultState: TelemetryState = {
   accel: { x: 0.02, y: 0.01, z: 1.0 },
@@ -71,6 +90,7 @@ const defaultState: TelemetryState = {
     power: "4.97V",
     buzzer: "Standby",
   },
+  warning: defaultWarning,
   latestToast: null,
   contacts: defaultContacts,
   settings: defaultSettings,
@@ -79,15 +99,19 @@ const defaultState: TelemetryState = {
   editContact: noop,
   deleteContact: noop,
   dismissToast: noop,
+  cancelWarning: noop,
 };
 
 const TelemetryContext = createContext<TelemetryState>(defaultState);
 
 // ── Provider ─────────────────────────────────────────────────────────────────
 export function TelemetryProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<Omit<TelemetryState,
-    "updateSettings" | "addContact" | "editContact" | "deleteContact" | "dismissToast"
-  >>({
+  type CoreState = Omit<TelemetryState,
+    "updateSettings" | "addContact" | "editContact" | "deleteContact" |
+    "dismissToast" | "cancelWarning"
+  >;
+
+  const [state, setState] = useState<CoreState>({
     accel: defaultState.accel,
     magnitude: defaultState.magnitude,
     impactEvents: defaultState.impactEvents,
@@ -96,96 +120,178 @@ export function TelemetryProvider({ children }: { children: React.ReactNode }) {
     alerts: defaultState.alerts,
     accelHistory: defaultState.accelHistory,
     modules: defaultState.modules,
+    warning: defaultState.warning,
     latestToast: defaultState.latestToast,
     contacts: defaultState.contacts,
     settings: defaultState.settings,
   });
 
   const tickRef = useRef(0);
+  // Track warning countdown separately so we can cancel it
+  const warningTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const warningActiveRef = useRef(false);
+
+  // ── Warning Countdown ────────────────────────────────────────────────────
+  const startWarningCountdown = useCallback(
+    (severity: "warning" | "danger", mag: number, durationSec: number) => {
+      if (warningActiveRef.current) return; // Already in warning
+      warningActiveRef.current = true;
+
+      // Set initial warning state
+      setState((prev) => ({
+        ...prev,
+        warning: {
+          active: true,
+          severity,
+          magnitude: mag,
+          secondsLeft: durationSec,
+          totalSeconds: durationSec,
+        },
+        modules: { ...prev.modules, buzzer: "Active" },
+      }));
+
+      let secondsLeft = durationSec;
+
+      warningTimerRef.current = setInterval(() => {
+        secondsLeft -= 1;
+
+        if (secondsLeft <= 0) {
+          // Warning expired → dispatch alert
+          if (warningTimerRef.current) clearInterval(warningTimerRef.current);
+          warningActiveRef.current = false;
+
+          setState((prev) => {
+            const alertEntry: AlertEntry = {
+              id: `impact-${Date.now()}`,
+              severity,
+              type: severity === "danger" ? "Severe Impact" : "Minor Impact",
+              message:
+                severity === "danger"
+                  ? `G-Force ${mag.toFixed(2)}g — emergency alert dispatched!`
+                  : `G-Force ${mag.toFixed(2)}g — warning window expired, alert sent.`,
+              timestamp: new Date().toLocaleString("en-IN", {
+                hour: "2-digit",
+                minute: "2-digit",
+                day: "2-digit",
+                month: "short",
+              }),
+              coordinates: `${prev.gps.lat.toFixed(4)}°N, ${prev.gps.lng.toFixed(4)}°E`,
+              smsStatus: severity === "danger" ? "Sent" : "N/A",
+              cancelStatus: "Dispatched",
+            };
+
+            return {
+              ...prev,
+              warning: defaultWarning,
+              impactEvents: prev.impactEvents + 1,
+              alerts: [alertEntry, ...prev.alerts].slice(0, 50),
+              latestToast: {
+                id: alertEntry.id,
+                message: alertEntry.message,
+                severity,
+              },
+              modules: { ...prev.modules, buzzer: "Standby" },
+            };
+          });
+        } else {
+          setState((prev) => ({
+            ...prev,
+            warning: { ...prev.warning, secondsLeft },
+          }));
+        }
+      }, 1000);
+    },
+    []
+  );
+
+  const cancelWarning = useCallback(() => {
+    if (warningTimerRef.current) clearInterval(warningTimerRef.current);
+    warningActiveRef.current = false;
+
+    setState((prev) => {
+      if (!prev.warning.active) return prev;
+
+      const cancelEntry: AlertEntry = {
+        id: `cancel-${Date.now()}`,
+        severity: "warning",
+        type: "User Cancel",
+        message: `Impact warning (${prev.warning.magnitude.toFixed(2)}g) cancelled by user.`,
+        timestamp: new Date().toLocaleString("en-IN", {
+          hour: "2-digit",
+          minute: "2-digit",
+          day: "2-digit",
+          month: "short",
+        }),
+        coordinates: `${prev.gps.lat.toFixed(4)}°N, ${prev.gps.lng.toFixed(4)}°E`,
+        smsStatus: "N/A",
+        cancelStatus: "Cancelled",
+      };
+
+      return {
+        ...prev,
+        warning: defaultWarning,
+        alerts: [cancelEntry, ...prev.alerts].slice(0, 50),
+        modules: { ...prev.modules, buzzer: "Standby" },
+      };
+    });
+  }, []);
 
   // ── Live Telemetry Interval (every 2s) ──────────────────────────────────
   useEffect(() => {
     const interval = setInterval(() => {
       tickRef.current += 1;
-      const tick = tickRef.current;
 
       setState((prev) => {
         // 5% chance of a spike
         const isSpike = Math.random() < 0.05;
         const newAccel = isSpike ? spikeAccel() : randomAccel();
         const mag = gForceMagnitude(newAccel.x, newAccel.y, newAccel.z);
-        const isImpact = mag > prev.settings.threshold;
 
         // GPS drift
         const newGps = randomGPSDrift(prev.gps.lat, prev.gps.lng);
         const newPastGps = [prev.gps, ...prev.pastGps].slice(0, 5);
 
-        // Rolling accel history (60 entries)
+        // Rolling accel history
         const now = new Date();
         const timeLabel = `${now.getHours().toString().padStart(2, "0")}:${now
           .getMinutes()
           .toString()
           .padStart(2, "0")}:${now.getSeconds().toString().padStart(2, "0")}`;
+
         const newHistory: AccelHistoryEntry[] = [
           ...prev.accelHistory.slice(1),
           { time: timeLabel, x: newAccel.x, y: newAccel.y, z: newAccel.z },
         ];
 
-        // Impact alert
-        let newAlerts = [...prev.alerts];
-        let newToast = prev.latestToast;
-
-        if (isImpact) {
-          const alertEntry: AlertEntry = {
-            id: `impact-${tick}`,
-            severity: mag > 3.5 ? "danger" : "warning",
-            type: mag > 3.5 ? "Severe Impact" : "Minor Impact",
-            message:
-              mag > 3.5
-                ? `G-Force spike of ${mag}g — emergency alert dispatched!`
-                : `G-Force spike of ${mag}g detected — warning triggered.`,
-            timestamp: new Date().toLocaleString("en-IN", {
-              hour: "2-digit",
-              minute: "2-digit",
-              day: "2-digit",
-              month: "short",
-            }),
-            coordinates: `${newGps.lat}°N, ${newGps.lng}°E`,
-            smsStatus: mag > 3.5 ? "Sent" : "N/A",
-            cancelStatus: mag > 3.5 ? "Dispatched" : "Cancelled",
-          };
-          newAlerts = [alertEntry, ...prev.alerts].slice(0, 50);
-          newToast = {
-            id: alertEntry.id,
-            message: alertEntry.message,
-            severity: alertEntry.severity as "warning" | "danger",
-          };
-        }
-
-        // Randomise voltage slightly
+        // Voltage fluctuation
         const voltage = (4.95 + Math.random() * 0.06).toFixed(2);
+
+        // Spike handling — start warning countdown if not already in one
+        const isImpact = mag > prev.settings.threshold;
+        if (isImpact && !warningActiveRef.current) {
+          const severity = mag > 3.5 ? "danger" : "warning";
+          setTimeout(() =>
+            startWarningCountdown(severity, mag, prev.settings.warnDuration), 0
+          );
+        }
 
         return {
           ...prev,
           accel: newAccel,
           magnitude: mag,
-          impactEvents: isImpact ? prev.impactEvents + 1 : prev.impactEvents,
           gps: newGps,
           pastGps: newPastGps,
-          alerts: newAlerts,
           accelHistory: newHistory,
           modules: {
             ...prev.modules,
-            buzzer: isImpact ? "Active" : "Standby",
             power: `${voltage}V`,
           },
-          latestToast: newToast,
         };
       });
     }, 2000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [startWarningCountdown]);
 
   // ── Setters ───────────────────────────────────────────────────────────────
   const updateSettings = useCallback((s: Partial<Settings>) => {
@@ -195,10 +301,7 @@ export function TelemetryProvider({ children }: { children: React.ReactNode }) {
   const addContact = useCallback((c: Omit<Contact, "id">) => {
     setState((prev) => ({
       ...prev,
-      contacts: [
-        ...prev.contacts,
-        { ...c, id: `c-${Date.now()}` },
-      ],
+      contacts: [...prev.contacts, { ...c, id: `c-${Date.now()}` }],
     }));
   }, []);
 
@@ -229,6 +332,7 @@ export function TelemetryProvider({ children }: { children: React.ReactNode }) {
         editContact,
         deleteContact,
         dismissToast,
+        cancelWarning,
       }}
     >
       {children}
