@@ -13,6 +13,11 @@ import {
   spikeAccel,
   gForceMagnitude,
   randomGPSDrift,
+  randomGpsQuality,
+  randomTiltAngles,
+  spikeTiltAngles,
+  computeJerk,
+  randomBatteryVoltage,
   sampleAlerts,
   createEmptyHistory,
   AlertEntry,
@@ -21,6 +26,8 @@ import {
   defaultContacts,
   Settings,
   defaultSettings,
+  GpsQuality,
+  TiltAngles,
 } from "@/lib/simulatedData";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -32,12 +39,30 @@ export interface WarningState {
   totalSeconds: number;
 }
 
+/** Real-time connection status */
+export type ConnectionStatus = "simulated" | "connected" | "disconnected";
+
 interface TelemetryState {
+  // ── Core accelerometer ────────────────────────────────────
   accel: { x: number; y: number; z: number };
   magnitude: number;
+  avgMagnitude: number;
+  jerk: number;
   impactEvents: number;
+
+  // ── Orientation (complementary filter) ───────────────────
+  tilt: TiltAngles;
+
+  // ── GPS ──────────────────────────────────────────────────
   gps: { lat: number; lng: number };
   pastGps: { lat: number; lng: number }[];
+  gpsQuality: GpsQuality;
+
+  // ── System health ─────────────────────────────────────────
+  batteryVoltage: number;
+  uptime: number;   // seconds since boot
+
+  // ── Module status ─────────────────────────────────────────
   alerts: AlertEntry[];
   accelHistory: AccelHistoryEntry[];
   modules: {
@@ -47,21 +72,47 @@ interface TelemetryState {
     power: string;
     buzzer: string;
   };
-  // Warning countdown state
+
+  // ── Warning countdown ─────────────────────────────────────
   warning: WarningState;
-  // Toast state
+
+  // ── Toast ────────────────────────────────────────────────
   latestToast: { id: string; message: string; severity: "warning" | "danger" } | null;
-  // Contacts
+
+  // ── Contacts & Settings ───────────────────────────────────
   contacts: Contact[];
-  // Settings
   settings: Settings;
-  // Setters
+
+  // ── Connection ────────────────────────────────────────────
+  connectionStatus: ConnectionStatus;
+
+  // ── Setters ──────────────────────────────────────────────
   updateSettings: (s: Partial<Settings>) => void;
   addContact: (c: Omit<Contact, "id">) => void;
   editContact: (id: string, c: Partial<Contact>) => void;
   deleteContact: (id: string) => void;
   dismissToast: () => void;
   cancelWarning: () => void;
+  /** Called by SerialBridgeContext when a real Arduino JSON frame arrives */
+  injectArduinoFrame: (frame: ArduinoDataFrame) => void;
+  /** Called by SerialBridgeContext to set connection status */
+  setConnectionStatus: (s: ConnectionStatus) => void;
+}
+
+/** Shape of a parsed Arduino JSON data frame (t:"data") */
+export interface ArduinoDataFrame {
+  t: "data";
+  ax: number; ay: number; az: number;
+  mag: number; avg: number; jerk: number;
+  gx: number; gy: number;
+  pitch: number; roll: number;
+  lat: number; lng: number;
+  sat: number; hdop: number;
+  volt: number;
+  impact: boolean;
+  roll_det: boolean;
+  warn: boolean;
+  warnLeft: number;
 }
 
 // ── Default State ────────────────────────────────────────────────────────────
@@ -78,28 +129,37 @@ const defaultWarning: WarningState = {
 const defaultState: TelemetryState = {
   accel: { x: 0.02, y: 0.01, z: 1.0 },
   magnitude: 1.0,
+  avgMagnitude: 1.0,
+  jerk: 0.0,
   impactEvents: 0,
+  tilt: { pitch: 0, roll: 0 },
   gps: { lat: 11.1271, lng: 78.6569 },
   pastGps: [],
+  gpsQuality: { satellites: 8, hdop: 1.2 },
+  batteryVoltage: 12.2,
+  uptime: 0,
   alerts: sampleAlerts,
   accelHistory: createEmptyHistory(60),
   modules: {
     gps: "Fixed",
     gsm: "Online",
     mpu: "Active",
-    power: "4.97V",
+    power: "12.2V",
     buzzer: "Standby",
   },
   warning: defaultWarning,
   latestToast: null,
   contacts: defaultContacts,
   settings: defaultSettings,
+  connectionStatus: "simulated",
   updateSettings: noop,
   addContact: noop,
   editContact: noop,
   deleteContact: noop,
   dismissToast: noop,
   cancelWarning: noop,
+  injectArduinoFrame: noop,
+  setConnectionStatus: noop,
 };
 
 const TelemetryContext = createContext<TelemetryState>(defaultState);
@@ -107,37 +167,44 @@ const TelemetryContext = createContext<TelemetryState>(defaultState);
 // ── Provider ─────────────────────────────────────────────────────────────────
 export function TelemetryProvider({ children }: { children: React.ReactNode }) {
   type CoreState = Omit<TelemetryState,
-    "updateSettings" | "addContact" | "editContact" | "deleteContact" |
-    "dismissToast" | "cancelWarning"
+    | "updateSettings" | "addContact" | "editContact" | "deleteContact"
+    | "dismissToast" | "cancelWarning" | "injectArduinoFrame" | "setConnectionStatus"
   >;
 
   const [state, setState] = useState<CoreState>({
-    accel: defaultState.accel,
-    magnitude: defaultState.magnitude,
-    impactEvents: defaultState.impactEvents,
-    gps: defaultState.gps,
-    pastGps: defaultState.pastGps,
-    alerts: defaultState.alerts,
-    accelHistory: defaultState.accelHistory,
-    modules: defaultState.modules,
-    warning: defaultState.warning,
-    latestToast: defaultState.latestToast,
-    contacts: defaultState.contacts,
-    settings: defaultState.settings,
+    accel:          defaultState.accel,
+    magnitude:      defaultState.magnitude,
+    avgMagnitude:   defaultState.avgMagnitude,
+    jerk:           defaultState.jerk,
+    impactEvents:   defaultState.impactEvents,
+    tilt:           defaultState.tilt,
+    gps:            defaultState.gps,
+    pastGps:        defaultState.pastGps,
+    gpsQuality:     defaultState.gpsQuality,
+    batteryVoltage: defaultState.batteryVoltage,
+    uptime:         defaultState.uptime,
+    alerts:         defaultState.alerts,
+    accelHistory:   defaultState.accelHistory,
+    modules:        defaultState.modules,
+    warning:        defaultState.warning,
+    latestToast:    defaultState.latestToast,
+    contacts:       defaultState.contacts,
+    settings:       defaultState.settings,
+    connectionStatus: defaultState.connectionStatus,
   });
 
   const tickRef = useRef(0);
-  // Track warning countdown separately so we can cancel it
-  const warningTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const warningActiveRef = useRef(false);
+  const warningTimerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
+  const warningActiveRef  = useRef(false);
+  const prevMagRef        = useRef(1.0);
+  const prevTickTimeRef   = useRef(Date.now());
 
   // ── Warning Countdown ────────────────────────────────────────────────────
   const startWarningCountdown = useCallback(
     (severity: "warning" | "danger", mag: number, durationSec: number) => {
-      if (warningActiveRef.current) return; // Already in warning
+      if (warningActiveRef.current) return;
       warningActiveRef.current = true;
 
-      // Set initial warning state
       setState((prev) => ({
         ...prev,
         warning: {
@@ -156,7 +223,6 @@ export function TelemetryProvider({ children }: { children: React.ReactNode }) {
         secondsLeft -= 1;
 
         if (secondsLeft <= 0) {
-          // Warning expired → dispatch alert
           if (warningTimerRef.current) clearInterval(warningTimerRef.current);
           warningActiveRef.current = false;
 
@@ -236,37 +302,100 @@ export function TelemetryProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  // ── Live Telemetry Interval (every 2s) ──────────────────────────────────
+  // ── Inject Real Arduino Frame ────────────────────────────────────────────
+  const injectArduinoFrame = useCallback(
+    (frame: ArduinoDataFrame) => {
+      setState((prev) => {
+        const newGps      = { lat: frame.lat, lng: frame.lng };
+        const newPastGps  = [prev.gps, ...prev.pastGps].slice(0, 5);
+        const now         = new Date();
+        const timeLabel   = `${now.getHours().toString().padStart(2, "0")}:${now
+          .getMinutes().toString().padStart(2, "0")}:${now.getSeconds().toString().padStart(2, "0")}`;
+
+        const newHistory: AccelHistoryEntry[] = [
+          ...prev.accelHistory.slice(1),
+          { time: timeLabel, x: frame.ax, y: frame.ay, z: frame.az },
+        ];
+
+        // Handle warning triggered by real Arduino
+        if (frame.warn && !warningActiveRef.current) {
+          const severity = frame.mag > 3.5 ? "danger" : "warning";
+          setTimeout(() =>
+            startWarningCountdown(severity, frame.mag, prev.settings.warnDuration), 0
+          );
+        }
+        if (!frame.warn && warningActiveRef.current && frame.warnLeft <= 0) {
+          if (warningTimerRef.current) clearInterval(warningTimerRef.current);
+          warningActiveRef.current = false;
+        }
+
+        return {
+          ...prev,
+          accel:          { x: frame.ax, y: frame.ay, z: frame.az },
+          magnitude:      frame.mag,
+          avgMagnitude:   frame.avg,
+          jerk:           frame.jerk,
+          tilt:           { pitch: frame.pitch, roll: frame.roll },
+          gps:            newGps,
+          pastGps:        newPastGps,
+          gpsQuality:     { satellites: frame.sat, hdop: frame.hdop },
+          batteryVoltage: frame.volt,
+          accelHistory:   newHistory,
+          modules: {
+            ...prev.modules,
+            gps:    frame.sat > 0 ? "Fixed" : "Searching",
+            power:  `${frame.volt.toFixed(1)}V`,
+            buzzer: frame.warn ? "Active" : "Standby",
+          },
+        };
+      });
+    },
+    [startWarningCountdown]
+  );
+
+  const setConnectionStatus = useCallback((s: ConnectionStatus) => {
+    setState((prev) => ({ ...prev, connectionStatus: s }));
+  }, []);
+
+  // ── Live Simulated Telemetry (every 2s — paused when real device connected)
   useEffect(() => {
     const interval = setInterval(() => {
-      tickRef.current += 1;
-
+      // Don't simulate when a real device is connected
       setState((prev) => {
-        // 5% chance of a spike
-        const isSpike = Math.random() < 0.05;
-        const newAccel = isSpike ? spikeAccel() : randomAccel();
-        const mag = gForceMagnitude(newAccel.x, newAccel.y, newAccel.z);
+        if (prev.connectionStatus === "connected") return prev;
 
-        // GPS drift
-        const newGps = randomGPSDrift(prev.gps.lat, prev.gps.lng);
+        tickRef.current += 1;
+        const now = Date.now();
+        const dtMs = now - prevTickTimeRef.current;
+        prevTickTimeRef.current = now;
+
+        const isSpike    = Math.random() < 0.05;
+        const newAccel   = isSpike ? spikeAccel()   : randomAccel();
+        const newTilt    = isSpike ? spikeTiltAngles() : randomTiltAngles(prev.tilt);
+        const mag        = gForceMagnitude(newAccel.x, newAccel.y, newAccel.z);
+        const jerk       = computeJerk(prevMagRef.current, mag, dtMs);
+        prevMagRef.current = mag;
+
+        // Rolling average of last FILTER_SIZE magnitudes
+        const last5 = [...prev.accelHistory.slice(-5), { time: "", x: newAccel.x, y: newAccel.y, z: newAccel.z }];
+        const avgMag = parseFloat((last5.reduce((s, e) =>
+          s + Math.sqrt(e.x * e.x + e.y * e.y + e.z * e.z), 0) / last5.length).toFixed(3));
+
+        const newGps     = randomGPSDrift(prev.gps.lat, prev.gps.lng);
         const newPastGps = [prev.gps, ...prev.pastGps].slice(0, 5);
+        const newQuality = randomGpsQuality(prev.gpsQuality);
+        const newBattery = randomBatteryVoltage(prev.batteryVoltage);
 
-        // Rolling accel history
-        const now = new Date();
-        const timeLabel = `${now.getHours().toString().padStart(2, "0")}:${now
-          .getMinutes()
-          .toString()
-          .padStart(2, "0")}:${now.getSeconds().toString().padStart(2, "0")}`;
+        const nowDate  = new Date();
+        const timeLabel = `${nowDate.getHours().toString().padStart(2, "0")}:${nowDate
+          .getMinutes().toString().padStart(2, "0")}:${nowDate.getSeconds().toString().padStart(2, "0")}`;
 
         const newHistory: AccelHistoryEntry[] = [
           ...prev.accelHistory.slice(1),
           { time: timeLabel, x: newAccel.x, y: newAccel.y, z: newAccel.z },
         ];
 
-        // Voltage fluctuation
-        const voltage = (4.95 + Math.random() * 0.06).toFixed(2);
-
-        // Spike handling — start warning countdown if not already in one
+        // Impact detection
         const isImpact = mag > prev.settings.threshold;
         if (isImpact && !warningActiveRef.current) {
           const severity = mag > 3.5 ? "danger" : "warning";
@@ -277,14 +406,20 @@ export function TelemetryProvider({ children }: { children: React.ReactNode }) {
 
         return {
           ...prev,
-          accel: newAccel,
-          magnitude: mag,
-          gps: newGps,
-          pastGps: newPastGps,
-          accelHistory: newHistory,
+          accel:          newAccel,
+          magnitude:      mag,
+          avgMagnitude:   avgMag,
+          jerk,
+          tilt:           newTilt,
+          gps:            newGps,
+          pastGps:        newPastGps,
+          gpsQuality:     newQuality,
+          batteryVoltage: newBattery,
+          uptime:         prev.uptime + 2,
+          accelHistory:   newHistory,
           modules: {
             ...prev.modules,
-            power: `${voltage}V`,
+            power: `${newBattery.toFixed(1)}V`,
           },
         };
       });
@@ -333,6 +468,8 @@ export function TelemetryProvider({ children }: { children: React.ReactNode }) {
         deleteContact,
         dismissToast,
         cancelWarning,
+        injectArduinoFrame,
+        setConnectionStatus,
       }}
     >
       {children}

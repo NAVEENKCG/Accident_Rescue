@@ -1,3 +1,4 @@
+// ── Accelerometer Simulation ─────────────────────────────────
 export function randomAccel(): { x: number; y: number; z: number } {
   return {
     x: parseFloat((Math.random() * 0.1 - 0.05).toFixed(3)),
@@ -19,6 +20,7 @@ export function gForceMagnitude(x: number, y: number, z: number): number {
   return parseFloat(Math.sqrt(x * x + y * y + z * z).toFixed(3));
 }
 
+// ── GPS Simulation ────────────────────────────────────────────
 export function randomGPSDrift(
   baseLat: number,
   baseLng: number
@@ -29,7 +31,59 @@ export function randomGPSDrift(
   };
 }
 
-// ── Accel History ────────────────────────────────────────────────────────────
+// ── GPS Quality Simulation ────────────────────────────────────
+export interface GpsQuality {
+  satellites: number;   // 0–12
+  hdop: number;         // horizontal dilution of precision (lower = better)
+}
+
+export function randomGpsQuality(prev?: GpsQuality): GpsQuality {
+  const prevSats = prev?.satellites ?? 8;
+  const prevHdop = prev?.hdop ?? 1.2;
+  // Small drift from previous values for realism
+  const satellites = Math.max(4, Math.min(12, Math.round(prevSats + (Math.random() - 0.5))));
+  const hdop = parseFloat(Math.max(0.8, Math.min(3.5, prevHdop + (Math.random() - 0.5) * 0.1)).toFixed(1));
+  return { satellites, hdop };
+}
+
+// ── Pitch / Roll Simulation ───────────────────────────────────
+export interface TiltAngles {
+  pitch: number;   // degrees, −90 to +90
+  roll: number;    // degrees, −90 to +90
+}
+
+export function randomTiltAngles(prev?: TiltAngles): TiltAngles {
+  const prevPitch = prev?.pitch ?? 0;
+  const prevRoll  = prev?.roll  ?? 0;
+  return {
+    pitch: parseFloat(Math.max(-45, Math.min(45, prevPitch + (Math.random() - 0.5) * 0.4)).toFixed(2)),
+    roll:  parseFloat(Math.max(-45, Math.min(45, prevRoll  + (Math.random() - 0.5) * 0.4)).toFixed(2)),
+  };
+}
+
+export function spikeTiltAngles(): TiltAngles {
+  return {
+    pitch: parseFloat(((Math.random() - 0.5) * 60).toFixed(2)),
+    roll:  parseFloat(((Math.random() - 0.5) * 60).toFixed(2)),
+  };
+}
+
+// ── Jerk Simulation ──────────────────────────────────────────
+//   Jerk = rate of change of G-force magnitude (g/s)
+export function computeJerk(prevMag: number, currMag: number, dtMs: number): number {
+  const dtSec = dtMs / 1000;
+  return parseFloat(((currMag - prevMag) / dtSec).toFixed(2));
+}
+
+// ── Battery Voltage Simulation ────────────────────────────────
+//   Simulates a 12V vehicle battery with gradual drift
+export function randomBatteryVoltage(prev?: number): number {
+  const base = prev ?? 12.2;
+  const next = base + (Math.random() - 0.5) * 0.05;
+  return parseFloat(Math.max(11.5, Math.min(12.8, next)).toFixed(2));
+}
+
+// ── Accel History ────────────────────────────────────────────
 export interface AccelHistoryEntry {
   time: string; // HH:MM:SS label
   x: number;
@@ -46,7 +100,7 @@ export function createEmptyHistory(size = 60): AccelHistoryEntry[] {
   })).reverse();
 }
 
-// ── Alert Entry ──────────────────────────────────────────────────────────────
+// ── Alert Entry ──────────────────────────────────────────────
 export interface AlertEntry {
   id: string;
   severity: "success" | "warning" | "danger";
@@ -141,7 +195,7 @@ export const sampleAlerts: AlertEntry[] = [
   },
 ];
 
-// ── Emergency Contact ────────────────────────────────────────────────────────
+// ── Emergency Contact ────────────────────────────────────────
 export interface Contact {
   id: string;
   name: string;
@@ -150,14 +204,15 @@ export interface Contact {
 }
 
 export const defaultContacts: Contact[] = [
-  { id: "c1", name: "Naveen Kumar", phone: "+91 98765 43210", priority: "Primary" },
-  { id: "c2", name: "Emergency Services", phone: "108", priority: "Secondary" },
-  { id: "c3", name: "Family Contact", phone: "+91 87654 32109", priority: "Tertiary" },
+  { id: "c1", name: "Naveen Kumar",      phone: "+91 98765 43210", priority: "Primary" },
+  { id: "c2", name: "Emergency Services", phone: "108",            priority: "Secondary" },
+  { id: "c3", name: "Family Contact",    phone: "+91 87654 32109", priority: "Tertiary" },
 ];
 
-// ── Settings ─────────────────────────────────────────────────────────────────
+// ── Settings ─────────────────────────────────────────────────
 export interface Settings {
   threshold: number;       // g-force impact threshold
+  jerkThreshold: number;   // g/s jerk threshold
   warnDuration: number;    // warning countdown in seconds
   smsAlerts: boolean;
   voiceAlerts: boolean;
@@ -167,6 +222,7 @@ export interface Settings {
 
 export const defaultSettings: Settings = {
   threshold: 2.5,
+  jerkThreshold: 8.0,
   warnDuration: 30,
   smsAlerts: true,
   voiceAlerts: false,

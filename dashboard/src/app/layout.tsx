@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Syne, Outfit } from "next/font/google";
 import "./globals.css";
 import { TelemetryProvider } from "@/context/TelemetryContext";
+import { SerialBridgeProvider } from "@/context/SerialBridgeContext";
 import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { Toast } from "@/components/Toast";
@@ -37,30 +38,32 @@ export default function RootLayout({
         className={`${outfit.variable} ${syne.variable} antialiased min-h-screen bg-[var(--bg-base)] text-white`}
       >
         <TelemetryProvider>
-          {/* Skip to content for accessibility */}
-          <a
-            href="#main-content"
-            className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-50 focus:px-4 focus:py-2 focus:bg-[var(--accent)] focus:text-black focus:rounded-lg focus:font-semibold"
-          >
-            Skip to content
-          </a>
+          <SerialBridgeProvider>
+            {/* Skip to content for accessibility */}
+            <a
+              href="#main-content"
+              className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-50 focus:px-4 focus:py-2 focus:bg-[var(--accent)] focus:text-black focus:rounded-lg focus:font-semibold"
+            >
+              Skip to content
+            </a>
 
-          {/* Sidebar */}
-          <Sidebar />
+            {/* Sidebar */}
+            <Sidebar />
 
-          {/* Top bar */}
-          <Topbar />
+            {/* Top bar */}
+            <Topbar />
 
-          {/* Page content — offset by sidebar + topbar */}
-          <main
-            id="main-content"
-            className="md:ml-[220px] pt-14 min-h-screen bg-[var(--bg-base)]"
-          >
-            {children}
-          </main>
+            {/* Page content — offset by sidebar + topbar */}
+            <main
+              id="main-content"
+              className="md:ml-[220px] pt-14 min-h-screen bg-[var(--bg-base)]"
+            >
+              {children}
+            </main>
 
-          {/* Global toast overlay */}
-          <Toast />
+            {/* Global toast overlay */}
+            <Toast />
+          </SerialBridgeProvider>
         </TelemetryProvider>
       </body>
     </html>
