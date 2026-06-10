@@ -20,6 +20,10 @@ import { Activity, Gauge } from "lucide-react";
 import { useTelemetry } from "@/context/TelemetryContext";
 import { fadeInUp, staggerContainer, SPRING_SMOOTH } from "@/lib/animations";
 import { cn } from "@/lib/cn";
+import { VehicleModel3D } from "@/components/VehicleModel3D";
+import dynamic from "next/dynamic";
+
+const MapComponent = dynamic(() => import("@/components/MapComponent"), { ssr: false });
 
 ChartJS.register(
   CategoryScale,
@@ -302,6 +306,16 @@ export default function LiveSensorsPage() {
         {/* Gauge */}
         <motion.div variants={fadeInUp}>
           <MagnitudeGauge value={magnitude} threshold={threshold} />
+        </motion.div>
+
+        {/* 3D Vehicle Model (col-span-1 lg:col-span-2) */}
+        <motion.div variants={fadeInUp} className="lg:col-span-2 h-[350px]">
+          <VehicleModel3D />
+        </motion.div>
+
+        {/* Radar Map */}
+        <motion.div variants={fadeInUp} className="h-[350px]">
+          <MapComponent />
         </motion.div>
 
         {/* Axis cards */}

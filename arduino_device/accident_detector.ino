@@ -1,6 +1,6 @@
 /**
  * ============================================================
- *  ACCIDENT RESCUE SYSTEM — Arduino Firmware v2.0
+ *  ACCIDENT RESCUE SYSTEM — Arduino Firmware v3.0 (Non-blocking)
  * ============================================================
  *  Author  : Accident Rescue System
  *  Board   : Arduino Uno / Nano (ATmega328P)
@@ -10,19 +10,15 @@
  *            Voltage Divider on A0 (12V battery monitor)
  *
  *  Serial output: 115200 baud, JSON lines
- *  Frame types:
- *    {"t":"data", ...telemetry...}   — every 200 ms
- *    {"t":"hb",  "uptime":XXXX}     — every 5 s
- *    {"t":"event","ev":"...","mag":X,"lat":X,"lng":X}  — on events
  * ============================================================
  */
 
-// ── Includes ─────────────────────────────────────────────────
 #include <SoftwareSerial.h>
 #include <TinyGPS++.h>
 #include <Wire.h>
 #include <MPU6050.h>
 #include <avr/wdt.h>          // Hardware watchdog
+#include <EEPROM.h>
 
 // ── Pin Definitions ──────────────────────────────────────────
 #define GSM_TX          7
@@ -31,31 +27,25 @@
 #define GPS_RX          4
 #define BUZZER_PIN      9
 #define CANCEL_BUTTON   2
-#define VOLT_PIN        A0    // Voltage divider input (R1=10kΩ, R2=10kΩ)
+#define VOLT_PIN        A0    
 
 // ── Thresholds & Timing ──────────────────────────────────────
-#define IMPACT_THRESHOLD     2.5f   // g-force threshold
-#define ROLL_THRESHOLD       150.0f // deg/s rollover threshold
-#define JERK_THRESHOLD       8.0f   // g/s jerk threshold (change in magnitude)
-#define WARNING_DURATION     15000  // ms — warning window before alert fires
-#define HEARTBEAT_INTERVAL   5000   // ms — heartbeat JSON every 5 s
-#define TELEMETRY_INTERVAL   200    // ms — data frame every 200 ms
-#define DEBOUNCE_MS          50     // ms — cancel button debounce
-#define FILTER_SIZE          5      // rolling average filter depth
-#define COMP_ALPHA           0.98f  // complementary filter coefficient
+float IMPACT_THRESHOLD       = 2.5f;   // Mutable via EEPROM
+#define ROLL_THRESHOLD       150.0f 
+#define JERK_THRESHOLD       8.0f   
+#define WARNING_DURATION     15000  
+#define HEARTBEAT_INTERVAL   5000   
+#define TELEMETRY_INTERVAL   200    
+#define DEBOUNCE_MS          50     
+#define FILTER_SIZE          5      
+#define COMP_ALPHA           0.98f  
 
-// ── Voltage Divider Scaling ──────────────────────────────────
-//   12V system: R1=10kΩ, R2=10kΩ → Vout = Vin / 2
-//   ADC Vref = 5V, resolution = 1024
-//   Vin = ADC_raw * (5.0 / 1023.0) * 2.0
 #define VOLT_SCALE           (5.0f / 1023.0f * 2.0f)
 
 // ── Emergency Contacts ───────────────────────────────────────
-//   Add / remove numbers here — up to 5 supported.
-//   Primary number (index 0) will also receive a voice call.
 const char* EMERGENCY_CONTACTS[] = {
-  "+91XXXXXXXXXX",   // Primary — also gets voice call
-  "+91YYYYYYYYYY",   // Secondary
+  "+91XXXXXXXXXX",   
+  "+91YYYYYYYYYY",   
 };
 const uint8_t CONTACT_COUNT = sizeof(EMERGENCY_CONTACTS) / sizeof(EMERGENCY_CONTACTS[0]);
 
@@ -71,21 +61,39 @@ bool    warningActive    = false;
 volatile bool alertCancelledISR = false;
 volatile unsigned long lastCancelTime = 0;
 
-// ── Rolling Average Buffer ───────────────────────────────────
 float   magnitudeBuffer[FILTER_SIZE];
 uint8_t bufferIndex = 0;
-float   prevMagnitude = 1.0f;   // for jerk calculation
+float   prevMagnitude = 1.0f;   
 
-// ── Complementary Filter State ───────────────────────────────
 float   pitchAngle = 0.0f;
 float   rollAngle  = 0.0f;
 unsigned long lastFilterTime = 0;
 
-// ── Timing ───────────────────────────────────────────────────
 unsigned long lastTelemetryMs  = 0;
 unsigned long lastHeartbeatMs  = 0;
+unsigned long lastSmsCheckMs   = 0;
 unsigned long warningStartMs   = 0;
-unsigned long systemUptime     = 0;   // ms since boot
+unsigned long systemUptime     = 0;   
+
+// ── GSM Non-blocking State Machine ───────────────────────────
+enum AlertState {
+  ALERT_IDLE,
+  ALERT_INIT_AT,
+  ALERT_INIT_CMGF,
+  ALERT_INIT_CSCS,
+  ALERT_SMS_START,
+  ALERT_SMS_PROMPT,
+  ALERT_SMS_SEND,
+  ALERT_CALL_START,
+  ALERT_CALL_WAIT,
+  ALERT_DONE
+};
+
+AlertState alertState = ALERT_IDLE;
+unsigned long alertTimer = 0;
+uint8_t currentContactIdx = 0;
+String alertSmsBody = "";
+float alertMagnitude = 0.0f;
 
 // ── ISR: Cancel Button ───────────────────────────────────────
 void cancelAlert() {
@@ -100,7 +108,6 @@ void cancelAlert() {
 //  SETUP
 // ============================================================
 void setup() {
-  // Disable watchdog first (in case of dirty reset)
   wdt_disable();
 
   Serial.begin(115200);
@@ -115,15 +122,20 @@ void setup() {
   pinMode(VOLT_PIN, INPUT);
   attachInterrupt(digitalPinToInterrupt(CANCEL_BUTTON), cancelAlert, FALLING);
 
-  // Initialise rolling average buffer to 1g (gravity at rest)
-  for (uint8_t i = 0; i < FILTER_SIZE; i++) magnitudeBuffer[i] = 1.0f;
+  // Load threshold from EEPROM
+  float savedThreshold;
+  EEPROM.get(0, savedThreshold);
+  if (savedThreshold >= 0.5f && savedThreshold <= 10.0f) {
+    IMPACT_THRESHOLD = savedThreshold;
+  } else {
+    IMPACT_THRESHOLD = 2.5f; // default
+  }
 
+  for (uint8_t i = 0; i < FILTER_SIZE; i++) magnitudeBuffer[i] = 1.0f;
   lastFilterTime = millis();
 
-  // Enable 8-second hardware watchdog
   wdt_enable(WDTO_8S);
 
-  // Boot event
   sendEventJSON("boot", 0.0f);
   Serial.println(F("{\"t\":\"hb\",\"uptime\":0,\"status\":\"ready\"}"));
 }
@@ -132,28 +144,27 @@ void setup() {
 //  LOOP
 // ============================================================
 void loop() {
-  wdt_reset();  // Pet the watchdog
-
+  wdt_reset(); 
   unsigned long now = millis();
 
-  // ── Feed GPS ─────────────────────────────────────────────
-  gpsSerial.listen();
-  while (gpsSerial.available()) gps.encode(gpsSerial.read());
+  // ── Feed GPS (only if not using GSM) ─────────────────────
+  if (alertState == ALERT_IDLE) {
+    gpsSerial.listen();
+    while (gpsSerial.available()) gps.encode(gpsSerial.read());
+  }
 
   // ── Read MPU6050 ─────────────────────────────────────────
   int16_t ax_raw, ay_raw, az_raw, gx_raw, gy_raw, gz_raw;
   mpu.getMotion6(&ax_raw, &ay_raw, &az_raw, &gx_raw, &gy_raw, &gz_raw);
 
-  // Convert to SI units
   float ax = ax_raw / 16384.0f;
   float ay = ay_raw / 16384.0f;
   float az = az_raw / 16384.0f;
-  float gx = gx_raw / 131.0f;   // deg/s
+  float gx = gx_raw / 131.0f;   
   float gy = gy_raw / 131.0f;
 
-  // ── Complementary Filter — Pitch & Roll ─────────────────
   float dt = (now - lastFilterTime) / 1000.0f;
-  if (dt <= 0.0f || dt > 1.0f) dt = 0.01f;  // safety clamp
+  if (dt <= 0.0f || dt > 1.0f) dt = 0.01f;  
   lastFilterTime = now;
 
   float pitchAccel = atan2(ay, sqrt(ax*ax + az*az)) * 57.2958f;
@@ -162,7 +173,6 @@ void loop() {
   pitchAngle = COMP_ALPHA * (pitchAngle + gx * dt) + (1.0f - COMP_ALPHA) * pitchAccel;
   rollAngle  = COMP_ALPHA * (rollAngle  + gy * dt) + (1.0f - COMP_ALPHA) * rollAccel;
 
-  // ── G-Force Magnitude & Rolling Average ─────────────────
   float magnitude = sqrt(ax*ax + ay*ay + az*az);
   magnitudeBuffer[bufferIndex] = magnitude;
   bufferIndex = (bufferIndex + 1) % FILTER_SIZE;
@@ -171,11 +181,9 @@ void loop() {
   for (uint8_t i = 0; i < FILTER_SIZE; i++) avgMagnitude += magnitudeBuffer[i];
   avgMagnitude /= FILTER_SIZE;
 
-  // ── Jerk (rate of G-force change) ───────────────────────
   float jerk = (magnitude - prevMagnitude) / dt;
   prevMagnitude = magnitude;
 
-  // ── Voltage ──────────────────────────────────────────────
   int   adcRaw = analogRead(VOLT_PIN);
   float voltage = adcRaw * VOLT_SCALE;
 
@@ -184,25 +192,23 @@ void loop() {
   bool rollover     = abs(gx) > ROLL_THRESHOLD || abs(gy) > ROLL_THRESHOLD;
   bool jerkSpike    = abs(jerk) > JERK_THRESHOLD;
 
-  // Confirmed impact: need at least 2 of 3 conditions OR severe rollover
   bool confirmedImpact = (rollover) ||
                          (linearImpact && jerkSpike) ||
                          (avgMagnitude > IMPACT_THRESHOLD * 1.5f);
 
-  if (confirmedImpact && !impactDetected && !warningActive) {
+  if (confirmedImpact && !impactDetected && !warningActive && alertState == ALERT_IDLE) {
     impactDetected  = true;
     warningActive   = true;
     warningStartMs  = now;
     alertCancelledISR = false;
 
     sendEventJSON("impact_detected", avgMagnitude);
-    tone(BUZZER_PIN, 1000);  // 1kHz warning tone
+    tone(BUZZER_PIN, 1000); 
   }
 
   // ── Warning Window ───────────────────────────────────────
   if (warningActive) {
     if (alertCancelledISR) {
-      // User pressed cancel button
       noTone(BUZZER_PIN);
       warningActive  = false;
       impactDetected = false;
@@ -210,21 +216,21 @@ void loop() {
       sendEventJSON("user_cancel", avgMagnitude);
 
     } else if (now - warningStartMs >= WARNING_DURATION) {
-      // Warning expired — fire emergency alert
       noTone(BUZZER_PIN);
       warningActive  = false;
       impactDetected = false;
 
-      tone(BUZZER_PIN, 2000);  // 2kHz emergency tone during alert
-      sendEmergencyAlert(avgMagnitude);
-      noTone(BUZZER_PIN);
+      tone(BUZZER_PIN, 2000); 
+      startEmergencyAlert(avgMagnitude);
     } else {
-      // Pulse buzzer pattern during warning: alternating 1kHz / 1.5kHz
       unsigned long elapsed = now - warningStartMs;
       if ((elapsed / 300) % 2 == 0) tone(BUZZER_PIN, 1000);
       else                           tone(BUZZER_PIN, 1500);
     }
   }
+
+  // ── GSM Alert State Machine ──────────────────────────────
+  handleAlertStateMachine(now);
 
   // ── Telemetry Frame ──────────────────────────────────────
   if (now - lastTelemetryMs >= TELEMETRY_INTERVAL) {
@@ -244,6 +250,153 @@ void loop() {
     lastHeartbeatMs = now;
     sendHeartbeat(now);
   }
+
+  // ── Check Incoming SMS (every 10s) ───────────────────────
+  if (now - lastSmsCheckMs >= 10000 && alertState == ALERT_IDLE) {
+    lastSmsCheckMs = now;
+    checkIncomingSMS();
+  }
+}
+
+// ============================================================
+//  OTA SMS HANDLING
+// ============================================================
+void checkIncomingSMS() {
+  gsmSerial.listen();
+  gsmSerial.println(F("AT+CMGL=\"REC UNREAD\""));
+  unsigned long start = millis();
+  String response = "";
+  while (millis() - start < 1000) {
+    while (gsmSerial.available()) {
+      response += (char)gsmSerial.read();
+    }
+  }
+
+  // Very basic parsing for "SET THRESH X.X"
+  int idx = response.indexOf("SET THRESH");
+  if (idx != -1) {
+    int startIdx = idx + 11;
+    float newThresh = response.substring(startIdx, startIdx + 3).toFloat();
+    if (newThresh >= 0.5f && newThresh <= 10.0f) {
+      IMPACT_THRESHOLD = newThresh;
+      EEPROM.put(0, IMPACT_THRESHOLD);
+      sendEventJSON("thresh_updated", IMPACT_THRESHOLD);
+    }
+    // Delete all SMS to free space
+    gsmSerial.println(F("AT+CMGD=1,4"));
+    delay(200);
+  }
+
+  gpsSerial.listen();
+}
+
+// ============================================================
+//  GSM NON-BLOCKING STATE MACHINE
+// ============================================================
+
+void startEmergencyAlert(float mag) {
+  alertMagnitude = mag;
+  float lat = gps.location.isValid() ? gps.location.lat() : 0.0f;
+  float lng = gps.location.isValid() ? gps.location.lng() : 0.0f;
+
+  String mapsLink = "https://maps.google.com/?q=" + String(lat, 6) + "," + String(lng, 6);
+  alertSmsBody  = "🚨 ACCIDENT ALERT!\n"
+                  "G-Force: " + String(mag, 2) + "g\n"
+                  "Location: " + mapsLink + "\n"
+                  "Sent by Accident Rescue System";
+
+  gsmSerial.listen();
+  alertState = ALERT_INIT_AT;
+  alertTimer = millis();
+}
+
+void handleAlertStateMachine(unsigned long now) {
+  if (alertState == ALERT_IDLE) return;
+
+  switch (alertState) {
+    case ALERT_INIT_AT:
+      gsmSerial.println(F("AT"));
+      alertState = ALERT_INIT_CMGF;
+      alertTimer = now;
+      break;
+
+    case ALERT_INIT_CMGF:
+      if (now - alertTimer >= 300) {
+        gsmSerial.println(F("AT+CMGF=1"));
+        alertState = ALERT_INIT_CSCS;
+        alertTimer = now;
+      }
+      break;
+
+    case ALERT_INIT_CSCS:
+      if (now - alertTimer >= 300) {
+        gsmSerial.println(F("AT+CSCS=\"GSM\""));
+        currentContactIdx = 0;
+        alertState = ALERT_SMS_START;
+        alertTimer = now;
+      }
+      break;
+
+    case ALERT_SMS_START:
+      if (now - alertTimer >= 300) {
+        if (currentContactIdx < CONTACT_COUNT) {
+          gsmSerial.print(F("AT+CMGS=\""));
+          gsmSerial.print(EMERGENCY_CONTACTS[currentContactIdx]);
+          gsmSerial.println(F("\""));
+          alertState = ALERT_SMS_PROMPT;
+          alertTimer = now;
+        } else {
+          alertState = ALERT_CALL_START;
+          alertTimer = now;
+        }
+      }
+      break;
+
+    case ALERT_SMS_PROMPT:
+      if (now - alertTimer >= 500) {
+        gsmSerial.print(alertSmsBody);
+        delay(10); // Small delay to flush buffer
+        gsmSerial.write(26); // Ctrl+Z
+        alertState = ALERT_SMS_SEND;
+        alertTimer = now;
+      }
+      break;
+
+    case ALERT_SMS_SEND:
+      if (now - alertTimer >= 4000) {
+        currentContactIdx++;
+        alertState = ALERT_SMS_START;
+        alertTimer = now;
+      }
+      break;
+
+    case ALERT_CALL_START:
+      if (now - alertTimer >= 1000) {
+        gsmSerial.print(F("ATD"));
+        gsmSerial.print(EMERGENCY_CONTACTS[0]);
+        gsmSerial.println(F(";"));
+        alertState = ALERT_CALL_WAIT;
+        alertTimer = now;
+      }
+      break;
+
+    case ALERT_CALL_WAIT:
+      if (now - alertTimer >= 20000) {
+        gsmSerial.println(F("ATH"));
+        alertState = ALERT_DONE;
+        alertTimer = now;
+      }
+      break;
+
+    case ALERT_DONE:
+      if (now - alertTimer >= 500) {
+        noTone(BUZZER_PIN);
+        sendEventJSON("alert_dispatched", alertMagnitude);
+        gpsSerial.listen();
+        alertState = ALERT_IDLE;
+      }
+      break;
+  }
 }
 
 // ============================================================
@@ -262,7 +415,6 @@ void sendTelemetryJSON(
   uint8_t sats = gps.satellites.isValid() ? (uint8_t)gps.satellites.value() : 0;
   float   hdop = gps.hdop.isValid()       ? gps.hdop.hdop()                 : 99.9f;
 
-  // Build compact JSON without ArduinoJSON to save RAM
   Serial.print(F("{\"t\":\"data\""));
   Serial.print(F(",\"ax\":")); Serial.print(ax,    3);
   Serial.print(F(",\"ay\":")); Serial.print(ay,    3);
@@ -303,77 +455,4 @@ void sendEventJSON(const char* eventName, float mag) {
   Serial.print(F(",\"lat\":"));    Serial.print(lat, 6);
   Serial.print(F(",\"lng\":"));    Serial.print(lng, 6);
   Serial.println(F("}"));
-}
-
-// ============================================================
-//  GSM EMERGENCY ALERT
-// ============================================================
-void sendEmergencyAlert(float mag) {
-  // Re-listen GPS for latest fix
-  gpsSerial.listen();
-  while (gpsSerial.available()) gps.encode(gpsSerial.read());
-
-  float lat = gps.location.isValid() ? gps.location.lat() : 0.0f;
-  float lng = gps.location.isValid() ? gps.location.lng() : 0.0f;
-
-  String mapsLink = "https://maps.google.com/?q=" + String(lat, 6) + "," + String(lng, 6);
-  String smsBody  = "🚨 ACCIDENT ALERT!\n"
-                    "G-Force: " + String(mag, 2) + "g\n"
-                    "Location: " + mapsLink + "\n"
-                    "Sent by Accident Rescue System";
-
-  gsmSerial.listen();
-  initGSM();
-
-  // ── Send SMS to all contacts ──────────────────────────────
-  for (uint8_t i = 0; i < CONTACT_COUNT; i++) {
-    wdt_reset();
-    sendSMS(EMERGENCY_CONTACTS[i], smsBody);
-    delay(1000);
-  }
-
-  // ── Make voice call to primary contact ───────────────────
-  wdt_reset();
-  makeCall(EMERGENCY_CONTACTS[0]);
-
-  sendEventJSON("alert_dispatched", mag);
-
-  // Switch back to GPS
-  gpsSerial.listen();
-}
-
-void initGSM() {
-  gsmSerial.println(F("AT"));           delay(300);
-  gsmSerial.println(F("AT+CMGF=1"));    delay(300);   // Text mode
-  gsmSerial.println(F("AT+CSCS=\"GSM\"")); delay(300);
-}
-
-void sendSMS(const char* number, const String& body) {
-  gsmSerial.print(F("AT+CMGS=\""));
-  gsmSerial.print(number);
-  gsmSerial.println(F("\""));
-  delay(500);
-  gsmSerial.print(body);
-  delay(200);
-  gsmSerial.write(26);   // Ctrl+Z
-  delay(4000);           // Wait for send confirmation
-}
-
-void makeCall(const char* number) {
-  gsmSerial.print(F("ATD"));
-  gsmSerial.print(number);
-  gsmSerial.println(F(";"));
-
-  unsigned long callStart = millis();
-  while (millis() - callStart < 20000UL) {
-    wdt_reset();
-    // Keep feeding GPS during call
-    gpsSerial.listen();
-    while (gpsSerial.available()) gps.encode(gpsSerial.read());
-    gpsSerial.listen();   // Switch back — gsmSerial already listening
-    delay(100);
-  }
-
-  gsmSerial.println(F("ATH"));  // Hang up
-  delay(500);
 }
